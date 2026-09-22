@@ -4,6 +4,7 @@ import (
     "fmt"
     "net"
     "log"
+    "io"
 )
 
 func main() {
@@ -20,12 +21,21 @@ func main() {
             log.Println("Accept error:", err)
             continue
         }
-        go handleConnection(conn)
+        go handleConnection(conn) // one go routine per connection
     }
 }
 
-func handleConnection(conn net.Conn) {
-    defer conn.Close()
-    fmt.Fprintf(conn, "Hello from handle connection\n")
-    fmt.Printf("New connection from %s\n", conn.RemoteAddr())
+func handleConnection(clientConn net.Conn) {
+    defer clientConn.Close()
+
+    // open a new connecction to the backend server
+    backendConn, err := net.Dial("tcp", "localhost:9001")
+    if err != nil {
+        log.Println("Backend error:", err)
+        return
+    }
+    defer backendConn.Close()
+
+    go io.Copy(backendConn, clientConn)
+    io.Copy(clientConn, backendConn)
 }
