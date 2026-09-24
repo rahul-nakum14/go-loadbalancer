@@ -40,6 +40,12 @@ func handleConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 
 	target := pool.Next()
+	if target == nil {
+		log.Println("No alive backends!")
+		clientConn.Close()
+		return
+	}
+	
 	log.Printf("Routing connection to: %s", target.Address)
 
 	backendConn, err := net.Dial("tcp", target.Address)
