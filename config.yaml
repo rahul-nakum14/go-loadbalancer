@@ -1,0 +1,5 @@
+port: 8080
+health_check_interval: 10
+backends:
+  - address: "localhost:9001"
+  - address: "localhost:9002"

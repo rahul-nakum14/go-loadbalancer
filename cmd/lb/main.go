@@ -6,21 +6,28 @@ import (
 	"log"
 	"net"
 	"github.com/rahul-nakum14/go-loadbalancer/internal/backend"
-	"time"
+	"github.com/rahul-nakum14/go-loadbalancer/internal/config"
+	"time"	
 )
 
 var pool *backend.Pool
 
 func main() {
-	// 1. Initialize the backend pool with our two dummy servers
-	pool = backend.NewPool([]string{
-		"localhost:9001",
-		"localhost:9002",
-	})
-	
-	go pool.HealthCheck(10 * time.Second) 
+	cfg, err := config.Load("config.yaml")
+	if err != nil {
+		log.Fatalf("Error loading config: %v", err)
+	}
 
-	listener, err := net.Listen("tcp", ":8080")
+	    addresses := []string{}
+	for _, backend := range cfg.Backends {
+		addresses = append(addresses, backend.Address)
+	}
+	// 1. Initialize the backend pool with our two dummy servers
+	pool = backend.NewPool(addresses)
+
+	go pool.HealthCheck(time.Duration(cfg.HealthCheckInterval) * time.Second)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 	if err != nil {
 		log.Fatal(err)
 	}
