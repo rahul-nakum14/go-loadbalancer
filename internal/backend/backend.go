@@ -3,7 +3,10 @@ package backend
 import (
     "sync/atomic"
     "sync"
-) 
+    "time"
+    "log"
+    "net"
+)
 
 type Backend struct {
     alive   bool 
@@ -54,4 +57,23 @@ func (b *Backend) Alive() bool {
     b.mu.RLock()
     defer b.mu.RUnlock()
     return b.alive
+}
+
+
+func (p *Pool) HealthCheck(interval time.Duration) {
+    ticker := time.NewTicker(interval) // here ticker is like a cron which runs like given interval
+    defer ticker.Stop()
+    for range ticker.C { // here ticker.C is a channel coz ticker return us a channel
+        for _, b := range p.backends {
+            conn, err := net.DialTimeout("tcp", b.Address, 2*time.Second)
+            if err != nil {
+                b.SetAlive(false)
+                log.Printf("Backend %s is DOWN", b.Address)
+            } else {
+                b.SetAlive(true)
+                conn.Close()
+                log.Printf("Backend %s is UP", b.Address)
+            }
+        }
+    }
 }

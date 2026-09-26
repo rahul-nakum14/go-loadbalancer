@@ -5,8 +5,8 @@ import (
 	"io"
 	"log"
 	"net"
-
 	"github.com/rahul-nakum14/go-loadbalancer/internal/backend"
+	"time"
 )
 
 var pool *backend.Pool
@@ -17,6 +17,8 @@ func main() {
 		"localhost:9001",
 		"localhost:9002",
 	})
+	
+	go pool.HealthCheck(10 * time.Second) 
 
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
