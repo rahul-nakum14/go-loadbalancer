@@ -1,16 +1,22 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"log"
-	"net"
-	"github.com/rahul-nakum14/go-loadbalancer/internal/backend"
-	"github.com/rahul-nakum14/go-loadbalancer/internal/config"
-	"time"	
-)
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "os/signal"
+    "sync"
+    "syscall"
+    "time"
 
+    "github.com/rahul-nakum14/go-loadbalancer/internal/backend"
+    "github.com/rahul-nakum14/go-loadbalancer/internal/config"
+)
 var pool *backend.Pool
+var wg sync.WaitGroup
+
 
 func main() {
 	cfg, err := config.Load("config.yaml")
@@ -18,14 +24,16 @@ func main() {
 		log.Fatalf("Error loading config: %v", err)
 	}
 
-	    addresses := []string{}
+	addresses := []string{}
 	for _, backend := range cfg.Backends {
 		addresses = append(addresses, backend.Address)
 	}
-	// 1. Initialize the backend pool with our two dummy servers
+
 	pool = backend.NewPool(addresses)
 
 	go pool.HealthCheck(time.Duration(cfg.HealthCheckInterval) * time.Second)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 	if err != nil {
@@ -35,17 +43,32 @@ func main() {
 	fmt.Println("Load balancer listening on :8080")
 
 	// 3. Accept incoming client connections forever
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println("Accept error:", err)
-			continue
-		}
-        go handleConnection(conn) // it will be one go routine per connection
-	}
+
+    go func() {
+        for {
+            conn, err := listener.Accept()
+            if err != nil {
+                select {
+                case <-ctx.Done(): 
+                    return
+                default:
+                    log.Println("Accept error:", err)
+                    continue
+                }
+            }
+            wg.Add(1)
+            go handleConnection(conn)
+        }
+    }()
+
+    <-ctx.Done()
+    log.Println("Shutting down... waiting for active connections to finish") // gaceful shutdown
+    listener.Close()
+    wg.Wait()      
 }
 
 func handleConnection(clientConn net.Conn) {
+	defer wg.Done()
 	defer clientConn.Close()
 
 	target := pool.Next()
