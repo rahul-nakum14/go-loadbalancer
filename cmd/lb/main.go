@@ -13,9 +13,12 @@ import (
 
     "github.com/rahul-nakum14/go-loadbalancer/internal/backend"
     "github.com/rahul-nakum14/go-loadbalancer/internal/config"
+	"github.com/rahul-nakum14/go-loadbalancer/internal/ratelimiter"
 )
+
 var pool *backend.Pool
 var wg sync.WaitGroup
+var limiter = ratelimiter.New() 
 
 
 func main() {
@@ -70,6 +73,12 @@ func main() {
 func handleConnection(clientConn net.Conn) {
 	defer wg.Done()
 	defer clientConn.Close()
+
+	ip, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+	if !limiter.Allow(ip) {
+			log.Printf("Rate limit exceeded for IP: %s", ip)
+			return;
+		}
 
 	target := pool.Next()
 	if target == nil {
