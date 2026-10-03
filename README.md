@@ -1,88 +1,62 @@
-# Go TCP Load Balancer
+# Go-loadbalancer 🚀
 
-A lightweight Layer 4 TCP load balancer built from scratch in Go. 
+A TCP load balancer built from scratch in Go. similar to what Nginx — Using Go's standard `net` package.
 
-I’ve been working as a backend engineer primarily with Node.js and NestJS, and I built this project to dive deep into Go's concurrency model, networking internals, and systems programming—building something from the ground up rather than just configuring Nginx.
+## What it does
 
----
+- Routes traffic across multiple backend servers using **round-robin**
+- Runs **health checks** in the background and skips dead backends automatically
+- **Rate limits** requests per IP using a token bucket (10 req/s, burst of 20)
+- **Graceful shutdown** — waits for active connections to finish before exiting
+- All config (port, backends, intervals) lives in `config.yaml`
 
-## What It Does
+## Go Concepts Used
 
-```
-Client (curl / Postman) 
-       │
-       ▼ (:8080)
-┌──────────────────────────────────────────────┐
-│             Go Load Balancer                 │
-│                                              │
-│  1. Rate Limiting (Token Bucket per IP)      │
-│  2. Round-Robin Selection (Atomic counter)   │
-│  3. Background Health Check (Ping backends)  │
-└──────────────────────────────────────────────┘
-       │                      │
-       ▼ (:9001)              ▼ (:9002)
-   Backend 1              Backend 2
-```
-
-1. **TCP Proxying**: Listens on `:8080` and opens a direct TCP tunnel to backend servers, forwarding incoming and outgoing bytes concurrently using `io.Copy`.
-2. **Round-Robin Routing**: Distributes requests evenly across healthy backend instances using a thread-safe `atomic.Uint64` counter (no lock contention).
-3. **Active Health Checks**: A background goroutine periodically pings each backend every few seconds. If a backend goes down, traffic automatically skips it until it recovers.
-4. **Rate Limiting**: Protects backends from floods using a token-bucket algorithm per client IP (`golang.org/x/time/rate`).
-5. **Graceful Shutdown**: Listens for `SIGINT` / `SIGTERM` (`Ctrl+C`), stops accepting new connections, and waits for all active connections to finish via `sync.WaitGroup` before exiting.
-6. **YAML Config**: Reads port, health check intervals, and upstream backend addresses from `config.yaml`.
-
----
+- **Goroutines** — one goroutine per connection + dedicated health check worker running in background
+- **Atomic operations** (`sync/atomic`) — lock-free round-robin counter for high-throughput routing
+- **RWMutex** — multiple goroutines can safely read backend health status simultaneously, with exclusive lock only on writes
+- **Mutex** — protects the per-IP rate limiter map from concurrent writes
+- **WaitGroup** — tracks in-flight connections during graceful shutdown
+- **Buffered channels** — used in load tester as a work queue distributed across 50 worker goroutines
+- **Context & OS signals** — `signal.NotifyContext` listens for `Ctrl+C` and propagates cancellation
 
 ## Project Structure
 
 ```
-├── cmd/
-│   ├── lb/
-│   │   └── main.go           # Entry point, TCP listener & shutdown logic
-│   └── tester/
-│       └── main.go           # Concurrency stress tester using worker pools
-├── internal/
-│   ├── backend/
-│   │   └── backend.go        # Backend pool, round-robin & health checking
-│   ├── config/
-│   │   └── config.go         # YAML config parsing
-│   └── ratelimiter/
-│       └── limiter.go        # Per-IP token bucket rate limiting
-├── config.yaml               # Server & backend configuration
-└── demoServer.go             # Simple HTTP server to simulate backends
+cmd/
+  lb/main.go           # TCP listener + proxy logic
+  tester/main.go       # Concurrent load tester (50 workers, 1000 requests)
+internal/
+  backend/backend.go   # Backend pool, round-robin, health checks
+  config/config.go     # YAML config parser
+  ratelimiter/         # Per-IP token bucket rate limiting
+config.yaml            # Port + backend addresses
+demoServer.go          # Dummy HTTP server for testing
 ```
 
----
-
-## How to Run It
-
-### 1. Start two test backend servers
-Open two terminal windows:
+## Run it
 
 ```bash
-# Terminal 1
+# Start two backends
 go run demoServer.go 9001
-
-# Terminal 2
 go run demoServer.go 9002
-```
 
-### 2. Start the Load Balancer
-```bash
-# Terminal 3
+# Start the load balancer
 go run cmd/lb/main.go
-```
 
-Now send requests to the load balancer:
-```bash
+# Hit it
 curl http://localhost:8080
-```
-Hit it a few times — you will see it alternate between `9001` and `9002`. If you kill one backend (`Ctrl+C`), the load balancer will detect it and send 100% of the traffic to the surviving one!
 
-### 3. Run the stress test
-```bash
-# Terminal 4
+# Stress test
 go run cmd/tester/main.go
 ```
-This spawns 50 concurrent worker goroutines pushing 1,000 requests to test throughput and verify the rate limiter.
 
+## Config
+
+```yaml
+port: 8080
+health_check_interval: 10
+backends:
+  - address: "localhost:9001"
+  - address: "localhost:9002"
+```
