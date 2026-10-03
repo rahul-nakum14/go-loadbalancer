@@ -1,115 +1,88 @@
-# go-loadbalancer
+# Go TCP Load Balancer
 
-A high-performance **Layer 4 TCP Load Balancer** built from scratch in Go. Designed to demonstrate production-grade systems engineering, concurrent networking, lock-free data structures, active health monitoring, and defensive traffic controls.
+A lightweight Layer 4 TCP load balancer built from scratch in Go. 
+
+I’ve been working as a backend engineer primarily with Node.js and NestJS, and I built this project to dive deep into Go's concurrency model, networking internals, and systems programming—building something from the ground up rather than just configuring Nginx.
 
 ---
 
-## Architecture Overview
+## What It Does
 
 ```
-                                  +-----------------------+
-                                  |     Clients / Postman |
-                                  +-----------+-----------+
-                                              |
-                                              v  [Port :8080]
-                                  +-----------+-----------+
-                                  |  go-loadbalancer      |
-                                  |                       |
-                                  |  - Token Bucket Limit |
-                                  |  - Atomic Round-Robin |
-                                  |  - Active Health Check|
-                                  +-----+-----------+-----+
-                                        |           |
-                        [TCP Proxy :9001|           |:9002]
-                                        v           v
-                                 +------+---+   +---+------+
-                                 | Backend1 |   | Backend2 |
-                                 +----------+   +----------+
+Client (curl / Postman) 
+       │
+       ▼ (:8080)
+┌──────────────────────────────────────────────┐
+│             Go Load Balancer                 │
+│                                              │
+│  1. Rate Limiting (Token Bucket per IP)      │
+│  2. Round-Robin Selection (Atomic counter)   │
+│  3. Background Health Check (Ping backends)  │
+└──────────────────────────────────────────────┘
+       │                      │
+       ▼ (:9001)              ▼ (:9002)
+   Backend 1              Backend 2
+```
+
+1. **TCP Proxying**: Listens on `:8080` and opens a direct TCP tunnel to backend servers, forwarding incoming and outgoing bytes concurrently using `io.Copy`.
+2. **Round-Robin Routing**: Distributes requests evenly across healthy backend instances using a thread-safe `atomic.Uint64` counter (no lock contention).
+3. **Active Health Checks**: A background goroutine periodically pings each backend every few seconds. If a backend goes down, traffic automatically skips it until it recovers.
+4. **Rate Limiting**: Protects backends from floods using a token-bucket algorithm per client IP (`golang.org/x/time/rate`).
+5. **Graceful Shutdown**: Listens for `SIGINT` / `SIGTERM` (`Ctrl+C`), stops accepting new connections, and waits for all active connections to finish via `sync.WaitGroup` before exiting.
+6. **YAML Config**: Reads port, health check intervals, and upstream backend addresses from `config.yaml`.
+
+---
+
+## Project Structure
+
+```
+├── cmd/
+│   ├── lb/
+│   │   └── main.go           # Entry point, TCP listener & shutdown logic
+│   └── tester/
+│       └── main.go           # Concurrency stress tester using worker pools
+├── internal/
+│   ├── backend/
+│   │   └── backend.go        # Backend pool, round-robin & health checking
+│   ├── config/
+│   │   └── config.go         # YAML config parsing
+│   └── ratelimiter/
+│       └── limiter.go        # Per-IP token bucket rate limiting
+├── config.yaml               # Server & backend configuration
+└── demoServer.go             # Simple HTTP server to simulate backends
 ```
 
 ---
 
-## Key Features
+## How to Run It
 
-- **Layer 4 TCP Proxying**: Direct bidirectional byte streaming via `io.Copy` with zero-copy overhead.
-- **Goroutine Concurrency**: Non-blocking connection handling with lightweight goroutines (~2KB overhead per connection).
-- **Lock-Free Round-Robin**: High-throughput target selection powered by `sync/atomic.Uint64` without mutex contention.
-- **Active Health Monitoring**: Dedicated background goroutine (`time.Ticker`) continuously probing backend health over TCP with thread-safe state management (`sync.RWMutex`).
-- **Token-Bucket Rate Limiter**: Per-IP traffic throttling using `golang.org/x/time/rate` to defend against flooding and denial-of-service attacks.
-- **Graceful Shutdown**: Signal interception (`SIGINT`/`SIGTERM`) utilizing `context.NotifyContext` and `sync.WaitGroup` to ensure in-flight connections complete before termination.
-- **Dynamic YAML Configuration**: Port, intervals, and backend topologies configured via `config.yaml`.
-
----
-
-## Go Concurrency & Systems Concepts Implemented
-
-| Concept | Implementation in Project |
-|---|---|
-| **Atomic Operations** | `atomic.Uint64` counter for lock-free round-robin load distribution. |
-| **Worker Goroutines** | Independent health-checking daemon running concurrently with the listener. |
-| **RWMutex** | Reader/Writer lock (`sync.RWMutex`) allowing simultaneous health reads with safe write isolation. |
-| **Context & Cancellation** | `signal.NotifyContext` for graceful OS interrupt propagation. |
-| **WaitGroups** | `sync.WaitGroup` tracking active connections during graceful draining. |
-| **Buffered Channels & Worker Pools** | Used in benchmark test suite (`test_load.go`) for parallel load generation. |
-
----
-
-## Performance & Stress Testing
-
-Benchmarked using an internal concurrent worker pool generator (`test_load.go`):
+### 1. Start two test backend servers
+Open two terminal windows:
 
 ```bash
-======================================
-Total Requests: 1000
-Concurrency:    50 simultaneous workers
-Duration:       ~1.06s
-Status:         Defensive rate limiter actively throttling flood
-======================================
-```
-
----
-
-## Quick Start
-
-### 1. Prerequisites
-- Go 1.22+ installed
-
-### 2. Configuration (`config.yaml`)
-```yaml
-port: 8080
-health_check_interval: 10
-backends:
-  - address: "localhost:9001"
-  - address: "localhost:9002"
-```
-
-### 3. Running the Stack
-
-**Terminal 1 — Backend 1:**
-```bash
+# Terminal 1
 go run demoServer.go 9001
-```
 
-**Terminal 2 — Backend 2:**
-```bash
+# Terminal 2
 go run demoServer.go 9002
 ```
 
-**Terminal 3 — Load Balancer:**
+### 2. Start the Load Balancer
 ```bash
+# Terminal 3
 go run cmd/lb/main.go
 ```
 
-**Terminal 4 — Run Concurrent Load Test:**
+Now send requests to the load balancer:
 ```bash
-go run test_load.go
+curl http://localhost:8080
 ```
+Hit it a few times — you will see it alternate between `9001` and `9002`. If you kill one backend (`Ctrl+C`), the load balancer will detect it and send 100% of the traffic to the surviving one!
 
----
+### 3. Run the stress test
+```bash
+# Terminal 4
+go run cmd/tester/main.go
+```
+This spawns 50 concurrent worker goroutines pushing 1,000 requests to test throughput and verify the rate limiter.
 
-## Resume Bullet Points
-
-> - **High-Performance Layer 4 TCP Load Balancer (Go)**: Built a concurrent Layer 4 TCP load balancer proxying raw socket traffic using Go's `net` package and bidirectional `io.Copy` streaming.
-> - **Lock-Free Concurrency & Thread-Safety**: Engineered a round-robin routing engine using `sync/atomic` primitives and `sync.RWMutex` to eliminate lock contention under concurrent load.
-> - **Fault Tolerance & Reliability**: Implemented background health-check daemon using `time.Ticker` to dynamically isolate degraded nodes and recover healthy upstream servers.
-> - **Defensive Traffic Throttling & Graceful Shutdown**: Integrated per-IP token bucket rate limiting (`golang.org/x/time/rate`) and signal-driven graceful draining using `context.NotifyContext` and `sync.WaitGroup`.
